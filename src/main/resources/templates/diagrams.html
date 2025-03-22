@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html xmlns:th="http://www.thymeleaf.org" lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dynamic Diagrams</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/interact.js/1.10.11/interact.min.js"></script>
+    <style>
+        .chart-container {
+            position: absolute;
+            border: 1px solid #ddd;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+    </style>
+</head>
+<body>
+<h1>Dynamic Diagrams</h1>
+
+<!-- Conteneurs pour les graphiques -->
+<div th:each="diagram : ${diagrams}">
+    <div class="chart-container"
+         th:style="'top:' + ${diagram.positionY} + 'px; left:' + ${diagram.positionX} + 'px; width:' + ${diagram.width} + 'px; height:' + ${diagram.height} + 'px;'">
+        <canvas th:attr="id='chart' + ${diagram.id}"></canvas>
+    </div>
+</div>
+
+<!-- Génération des scripts pour les graphiques -->
+<script th:each="diagram : ${diagrams}" th:utext="${diagram.getGraphScript()}"></script>
+<script>
+    interact('.chart-container')
+        .draggable({
+            listeners: {
+                move(event) {
+                    const target = event.target;
+                    const x = (parseFloat(target.getAttribute('data-x')) || 0) + event.dx;
+                    const y = (parseFloat(target.getAttribute('data-y')) || 0) + event.dy;
+
+                    target.style.transform = `translate(${x}px, ${y}px)`;
+                    target.setAttribute('data-x', x);
+                    target.setAttribute('data-y', y);
+                }
+            }
+        })
+        .resizable({
+            edges: { left: true, right: true, bottom: true, top: true },
+            listeners: {
+                move(event) {
+                    const target = event.target;
+                    let { width, height } = event.rect;
+
+                    target.style.width = `${width}px`;
+                    target.style.height = `${height}px`;
+
+                    const chartId = target.querySelector('canvas').id;
+                    const chartInstance = Chart.getChart(chartId);
+
+                    if (chartInstance) {
+                        chartInstance.resize();
+                    }
+                }
+            }
+        });
+</script>
+</body>
+</html>
