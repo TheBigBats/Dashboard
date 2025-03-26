@@ -1,0 +1,10 @@
+show dbs
+db.utilisateurs.insertMany([{nom:"Alice",age:28},{nom:"Bo",age:35}])
+db.utilisateurs.insertMany([{nom:"Alice,age:28},{nom:"Bo",age:35}])
+db.utilisateurs.insertMany([{nom:"Alice,age:28},{nom:"Bob",age:35}])
+db.utilisateurs.insertMany([{nom:"Alice,age:28},{nom"Bob",age:35}])
+db.utilisateurs.insertMany([{nom:"Alice,age:28},{nom"Bob,age:35}])
+use DataBase
+show collections
+use local
+show dbs

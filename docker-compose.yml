@@ -11,7 +11,7 @@ services:
       - ./build:/app/build
       - shared-data:/shared-data
     networks:
-      - app-network  # Place le service sur le réseau Docker partagé
+      - app-network
     environment:
       SPRING_PROFILES_ACTIVE: docker
     depends_on:
@@ -23,27 +23,40 @@ services:
     ports:
       - "3000:3000"
     environment:
-      MB_DB_TYPE: h2  # Change-le plus tard pour ta vraie base
-      MB_DB_FILE: /metabase-data/metabase.db
+      MB_DB_TYPE: postgres
+      MB_DB_DBNAME: db
+      MB_DB_PORT: 5432
+      MB_DB_USER: sa
+      MB_DB_PASS: sa
+      MB_DB_HOST: postgres
     volumes:
       - ./metabase-data:/metabase-data
     networks:
       - app-network
     depends_on:
-      - springboot-app
+      - postgres
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:3000/api/health" ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
 
   init-metabase:
     build: ./init-metabase
     depends_on:
-      - metabase
+      metabase:
+        condition: service_healthy
     networks:
       - app-network
     environment:
       MB_URL: http://metabase:3000
       MB_USER: admin@admin.com
-      MB_PASSWORD: admin123
-      MONGO_URI: "mongodb+srv://batistegros:23aSCw2cIGDpvEmO@cluster0.agiit.mongodb.net"
-      MONGO_DB: "sample_mflix"
+      MB_PASSWORD: admin123!
+      METABASE_DB_HOST: postgres
+      METABASE_DB_PORT: 5432
+      METABASE_DB_NAME: db
+      METABASE_DB_USER: sa
+      METABASE_DB_PASS: sa
 
   postgres:
     image: postgres:15
@@ -52,6 +65,7 @@ services:
       POSTGRES_DB: db
       POSTGRES_USER: sa
       POSTGRES_PASSWORD: sa
+      POSTGRES_HOST_AUTH_METHOD: md5
     ports:
       - "5432:5432"
     volumes:
@@ -72,12 +86,49 @@ services:
     depends_on:
       - postgres
 
+  mongodb:
+    image: mongo:6.0
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    command: [ "mongod", "--replSet", "rs0" ]
+    volumes:
+      - ./mongo-init:/docker-entrypoint-initdb.d
+      - ./mongo-data:/data/db
+    networks:
+      - app-network
+    healthcheck:
+      test: [ "CMD-SHELL", "echo 'db.runCommand({ ping: 1 })' | mongosh --quiet" ]
+      interval: 10s
+      timeout: 10s
+      retries: 5
+
+
+  mongo-express:
+    image: mongo-express
+    container_name: mongo-express
+    restart: unless-stopped
+    ports:
+      - "8081:8081"
+    environment:
+      ME_CONFIG_MONGODB_URL: mongodb://mongodb:27017
+      ME_CONFIG_MONGODB_PORT: 27017
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
+      ME_CONFIG_MONGODB_AUTH_DATABASE: "admin"
+      ME_CONFIG_BASICAUTH_USERNAME: admin
+      ME_CONFIG_BASICAUTH_PASSWORD: admin
+      WAIT_HOSTS: ""
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - app-network
+
 
 networks:
   app-network:
     driver: bridge
 
-
 volumes:
-  shared-data: # Définition du volume partagé
-  pgdata: #volume postgre
+  shared-data:
+  pgdata:

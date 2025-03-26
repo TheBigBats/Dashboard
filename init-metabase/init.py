@@ -2,70 +2,124 @@ import os
 import time
 import requests
 
-mb_url = os.getenv("MB_URL")
-mb_user = os.getenv("MB_USER")
-mb_password = os.getenv("MB_PASSWORD")
-mongo_uri = os.getenv("MONGO_URI")
-mongo_db = os.getenv("MONGO_DB")
+MB_URL = os.environ.get("MB_URL", "http://metabase:3000")
+MB_USER = os.environ.get("MB_USER", "admin@admin.com")
+MB_PASSWORD = os.environ.get("MB_PASSWORD", "Admin_1234!")
 
-print("⏳ Attente du démarrage de Metabase...")
-time.sleep(15)
+PG_NAME = "PostgreSQL-Auto"
+PG_HOST = os.environ.get("METABASE_DB_HOST", "postgres")
+PG_PORT = int(os.environ.get("METABASE_DB_PORT", 5432))
+PG_DB = os.environ.get("METABASE_DB_NAME", "db")
+PG_USER = os.environ.get("METABASE_DB_USER", "sa")
+PG_PASS = os.environ.get("METABASE_DB_PASS", "sa")
 
-# Vérifie si Metabase est déjà configuré
-status = requests.get(f"{mb_url}/api/session/properties")
-if not status.ok:
-    print("❌ Metabase inaccessible.")
-    exit()
+def wait_for_metabase():
+    print("⏳ Attente du démarrage de Metabase...")
+    while True:
+        try:
+            res = requests.get(f"{MB_URL}/api/health")
+            if res.status_code == 200:
+                print("✅ Metabase est prêt.")
+                break
+        except requests.exceptions.RequestException:
+            pass
+        time.sleep(2)
 
-if status.json().get("setup-token"):
+def is_metabase_already_setup():
+    res = requests.get(f"{MB_URL}/api/session/properties")
+    return res.json().get("setup-token") is None
+
+def setup_admin_user():
     print("🛠️ Création de l'utilisateur admin...")
-    setup_resp = requests.post(f"{mb_url}/api/setup", json={
-        "prefs": {
-            "site_name": "Auto Metabase",
-            "allow_tracking": False
-        },
+    res_token = requests.get(f"{MB_URL}/api/session/properties")
+    token = res_token.json().get("setup-token")
+    if not token:
+        print("⚠️ Metabase déjà initialisé.")
+        return
+
+    res = requests.post(f"{MB_URL}/api/setup", json={
+        "token": token,
         "user": {
-            "email": mb_user,
-            "password": mb_password,
+            "email": MB_USER,
+            "password": MB_PASSWORD,
             "first_name": "Admin",
-            "last_name": "Auto"
+            "last_name": "User"
+        },
+        "prefs": {
+            "site_name": "Auto-Metabase",
+            "site_locale": "fr"
         },
         "database": None
     })
-    if setup_resp.status_code != 200:
-        print("❌ Erreur création admin:", setup_resp.text)
-        exit()
-    session_id = setup_resp.json()["id"]
-else:
-    print("🔐 Connexion à Metabase...")
-    resp = requests.post(f"{mb_url}/api/session", json={
-        "username": mb_user,
-        "password": mb_password
+
+    if res.status_code != 200:
+        print(f"❌ Erreur création admin: {res.text}")
+    else:
+        print("✅ Utilisateur admin créé.")
+
+def login():
+    print(f"🔐 Connexion à Metabase avec {MB_USER}")
+    res = requests.post(f"{MB_URL}/api/session", json={
+        "username": MB_USER,
+        "password": MB_PASSWORD
     })
-    if resp.status_code != 200:
-        print("❌ Erreur de connexion:", resp.text)
-        exit()
-    session_id = resp.json()["id"]
+    res.raise_for_status()
+    session_id = res.json()['id']
+    print("✅ Connecté.")
+    return {"X-Metabase-Session": session_id}
 
-headers = {"X-Metabase-Session": session_id}
+def check_postgres_exists(headers):
+    res = requests.get(f"{MB_URL}/api/database", headers=headers)
+    data = res.json()
+    databases = data.get("data", [])  # ← récupère la vraie liste
 
-print("🧩 Ajout de la base MongoDB...")
-db_payload = {
-    "name": "MongoDB Auto",
-    "engine": "mongo",
-    "details": {
-        "host": mongo_uri,
-        "use_srv": True,
-        "ssl": True,
-        "dbname": mongo_db,
-        "auth_source": "admin"
-    },
-    "is_full_sync": True,
-    "is_on_demand": False
-}
+    for db in databases:
+        if db["name"] == PG_NAME:
+            print(f"ℹ️ PostgreSQL déjà existant (id={db['id']})")
+            return db["id"]
+    return None
 
-resp = requests.post(f"{mb_url}/api/database", json=db_payload, headers=headers)
-if resp.status_code == 200:
-    print("✅ Base MongoDB connectée et en cours d’analyse.")
-else:
-    print("❌ Erreur ajout base MongoDB:", resp.text)
+
+def add_postgres_db(headers):
+    print("➕ Ajout de PostgreSQL comme source de données...")
+    res = requests.post(f"{MB_URL}/api/database", headers=headers, json={
+        "name": PG_NAME,
+        "engine": "postgres",
+        "details": {
+            "host": PG_HOST,
+            "port": PG_PORT,
+            "dbname": PG_DB,
+            "user": PG_USER,
+            "password": PG_PASS,
+            "ssl": False
+        },
+        "is_full_sync": True,
+        "is_on_demand": False
+    })
+    res.raise_for_status()
+    db_id = res.json()['id']
+    print(f"✅ PostgreSQL ajouté (id: {db_id})")
+    return db_id
+
+def trigger_sync(headers, db_id):
+    print("🔄 Lancement du scan des tables...")
+    res = requests.post(f"{MB_URL}/api/database/{db_id}/sync_schema", headers=headers)
+    res.raise_for_status()
+    print("✅ Scan lancé.")
+
+def main():
+    wait_for_metabase()
+
+    if not is_metabase_already_setup():
+        setup_admin_user()
+
+    headers = login()
+
+    db_id = check_postgres_exists(headers)
+    if not db_id:
+        db_id = add_postgres_db(headers)
+
+    trigger_sync(headers, db_id)
+
+if __name__ == "__main__":
+    main()
