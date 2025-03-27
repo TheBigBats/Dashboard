@@ -36,23 +36,50 @@ echo "✅ Airbyte est prêt !"
 # 4. Récupérer les credentials
 CREDENTIALS=$($ABCTL local credentials 2>/dev/null || true)
 
-ADMIN_EMAIL=$(echo "$CREDENTIALS" | grep -i "Email:" | sed 's/.*Email:[[:space:]]*//')
-ADMIN_PASSWORD=$(echo "$CREDENTIALS" | grep -i "Password:" | sed 's/.*Password:[[:space:]]*//')
+ADMIN_EMAIL=$(echo "$CREDENTIALS" | grep -oP 'Email:\s+\K.*')
+ADMIN_PASSWORD=$(echo "$CREDENTIALS" | grep -oP 'Password:\s+\K.*')
 
 echo "📧 Email récupéré : $ADMIN_EMAIL"
 echo "🔑 Mot de passe récupéré : $ADMIN_PASSWORD"
 
 # 5. Lancer docker-compose
 echo "🐳 Démarrage des conteneurs..."
-docker-compose up -d --build --wait
+docker-compose up -d --build --wait || true
+#echo "📧 DEBUG HEX : $(echo -n "$ADMIN_EMAIL" | xxd)"
+ADMIN_EMAIL=$(echo "$ADMIN_EMAIL" | tr -d '\r' | xargs)
+# Supprimer les codes couleurs ANSI (séquences d'échappement)
+ADMIN_EMAIL=$(echo "$ADMIN_EMAIL" | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r\n' | xargs)
+if [[ "$ADMIN_EMAIL" != "[not set]" ]]; then
+  echo "✅ Airbyte est déjà initialisé avec l'email : $ADMIN_EMAIL"
+  echo "⛔️ Arrêt du script pour éviter une reconfiguration."
+  read -p "💡 Appuyez sur Entrée pour quitter..."
 
-# 6. Lancer la config Airbyte si première initialisation
-if [ -z "$ADMIN_EMAIL" ]; then
-  echo "⚙️ Configuration initiale d’Airbyte..."
-  bash airbyte-setup.sh
-else
-  echo "✅ Airbyte déjà initialisé."
+  exit 0
 fi
+
+echo "⏳ Attente que l'email admin soit configuré sur Airbyte..."
+
+# Boucle jusqu'à ce que l'email ne soit plus '[not set]'
+while true; do
+  CREDENTIALS=$($ABCTL local credentials 2>/dev/null || true)
+  ADMIN_EMAIL=$(echo "$CREDENTIALS" | grep -oP 'Email:\s+\K.*')
+  ADMIN_EMAIL=$(echo "$ADMIN_EMAIL" | xargs)  # Trim des espaces éventuels
+  ADMIN_EMAIL=$(echo "$ADMIN_EMAIL" | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r\n' | xargs)
+  echo "📧 Email détecté : '$ADMIN_EMAIL'"
+
+  if [[ "$ADMIN_EMAIL" != "[not set]" && -n "$ADMIN_EMAIL" ]]; then
+    echo "✅ Email configuré : $ADMIN_EMAIL"
+    break
+  fi
+
+  sleep 3
+done
+# 6. Lancer la config Airbyte si première initialisation
+echo "⚙️ Configuration initiale d’Airbyte..."
+bash airbyte-setup.sh
+
+
+
 
 # 7. Pause finale
 echo ""
