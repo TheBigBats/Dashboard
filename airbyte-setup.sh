@@ -129,7 +129,7 @@ else
       "connectionConfiguration": {
         "database_config": {
           "cluster_type": "SELF_MANAGED_REPLICA_SET",
-          "connection_string": "mongodb://host.docker.internal:27017",
+          "connection_string": "mongodb://mongodb:27017/?replicaSet=rs0&tls=false",
           "database": "DataBase",
           "auth_source": "admin"
         }
@@ -200,10 +200,33 @@ else
   exit 1
 fi
 
+echo "🧹 Suppression des connexions existantes Mongo → PostgreSQL (si besoin)..."
+EXISTING_CONNECTION_ID=$(curl -s -X POST "$AIRBYTE_URL/api/v1/connections/list" \
+  -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+  -d '{"workspaceId": "'"$WORKSPACE_ID"'"}' | grep -o '"connectionId":"[^"]*"' | sed -E 's/.*"connectionId":"([^"]*)".*/\1/' | head -n 1)
+
+if [ -n "$EXISTING_CONNECTION_ID" ]; then
+  echo "🗑️ Connexion existante détectée : $EXISTING_CONNECTION_ID → suppression"
+  curl -s -X POST "$AIRBYTE_URL/api/v1/connections/delete" \
+    -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+    -d '{"connectionId": "'"$EXISTING_CONNECTION_ID"'"}'
+fi
+
 # -----------------------------
 # 🔗 Créer la connexion complète
 # -----------------------------
-echo "🔗 Création de la connexion entre MongoDB et PostgreSQL..."
+echo "🔧 Préparation du syncCatalog pour toutes les collections Mongo..."
+RAW_CATALOG=$(echo "$CATALOG" | grep -o '"catalog":{.*}' | sed 's/"catalog"://')
+
+SYNC_CATALOG='{
+  "schemaEnforcement": true,
+  "streams": []
+}'
+
+# Injecter les streams de ton catalog dans le bon champ
+SYNC_CATALOG=$(echo "$RAW_CATALOG" | sed 's/"selected":false/"selected":true/g' | sed 's/^{/{ "schemaEnforcement": true, /')
+
+echo "🔗 Création de la connexion complète MongoDB → PostgreSQL..."
 RESPONSE=$(curl -s -X POST "$AIRBYTE_URL/api/v1/connections/create" \
   -H "$AUTH_HEADER" -H "Content-Type: application/json" \
   -d @- <<EOF
@@ -211,19 +234,56 @@ RESPONSE=$(curl -s -X POST "$AIRBYTE_URL/api/v1/connections/create" \
   "sourceId": "$MONGO_SOURCE_ID",
   "destinationId": "$POSTGRES_DEST_ID",
   "status": "active",
-  "syncCatalog": $CATALOG
+  "syncCatalog": $SYNC_CATALOG,
+  "scheduleType": "basic",
+  "scheduleData": {
+    "basicSchedule": {
+      "units": 5,
+      "timeUnit": "minutes"
+    }
+  }
 }
 EOF
 )
 
+echo "📦 Réponse création connexion : $RESPONSE"
 
-if echo "$RESPONSE" | grep -q 'connectionId'; then
-  echo "✅ Connexion MongoDB -> PostgreSQL créée avec succès !"
+# 🔁 Récupération de l'ID de la connexion
+CONNECTION_ID=$(echo "$RESPONSE" | grep -o '"connectionId":\s*"[^"]*"' | sed -E 's/.*"connectionId":\s*"([^"]*)".*/\1/')
+
+if [ -n "$CONNECTION_ID" ]; then
+  echo "✅ Connexion créée avec succès ! ID = $CONNECTION_ID"
 else
-  echo "❌ Erreur lors de la création de la connexion."
-  echo "📦 Réponse brute : $RESPONSE"
+  echo "❌ Échec de la création de la connexion."
+  echo "$RESPONSE"
   exit 1
 fi
+
+
+echo "🔁 Reset de la connexion pour corriger l’état et le schéma..."
+curl -s -X POST "$AIRBYTE_URL/api/v1/connections/reset" \
+  -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+  -d '{"connectionId": "'"$CONNECTION_ID"'"}'
+
+echo "✅ Reset effectué."
+
+echo "🛠 Mise à jour de la connexion pour activer la synchronisation toutes les 5 minutes..."
+curl -s -X POST "$AIRBYTE_URL/api/v1/connections/update" \
+  -H "$AUTH_HEADER" -H "Content-Type: application/json" \
+  -d @- <<EOF
+{
+  "connectionId": "$CONNECTION_ID",
+  "status": "active",
+  "scheduleType": "basic",
+  "scheduleData": {
+    "basicSchedule": {
+      "units": 5,
+      "timeUnit": "minutes"
+    }
+  }
+}
+EOF
+
 
 # -----------------------------
 # 🚀 Lancer la première synchronisation
@@ -236,4 +296,5 @@ RESPONSE=$(curl -s -X POST "$AIRBYTE_URL/api/v1/connections/sync" \
   -d '{"connectionId": "'$CONNECTION_ID'"}')
 
 echo "✅ Synchronisation lancée !"
+read -p "👉 Appuyez sur Entrée pour continuer..."
 exit 0

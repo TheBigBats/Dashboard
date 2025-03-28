@@ -42,6 +42,13 @@ ADMIN_PASSWORD=$(echo "$CREDENTIALS" | grep -oP 'Password:\s+\K.*')
 echo "📧 Email récupéré : $ADMIN_EMAIL"
 echo "🔑 Mot de passe récupéré : $ADMIN_PASSWORD"
 
+echo "Création du réseau"
+#docker network rm app-network || true
+docker network create \
+  --driver bridge \
+  --subnet 172.28.0.0/16 \
+  app-network || true
+
 # 5. Lancer docker-compose
 echo "🐳 Démarrage des conteneurs..."
 docker-compose up -d --build --wait || true
@@ -49,6 +56,28 @@ docker-compose up -d --build --wait || true
 ADMIN_EMAIL=$(echo "$ADMIN_EMAIL" | tr -d '\r' | xargs)
 # Supprimer les codes couleurs ANSI (séquences d'échappement)
 ADMIN_EMAIL=$(echo "$ADMIN_EMAIL" | sed 's/\x1b\[[0-9;]*m//g' | tr -d '\r\n' | xargs)
+echo "Mettre airbyte dans le même réseau"
+docker network connect app-network airbyte-abctl-control-plane || true
+
+echo "⏳ Waiting for MongoDB to be healthy..."
+until [ "$(docker inspect --format='{{json .State.Health.Status}}' mongodb)" == "\"healthy\"" ]; do
+  sleep 1
+done
+
+echo "✅ MongoDB is healthy, starting replica set init..."
+
+docker exec mongodb mongosh --eval '
+  if (!rs.status().ok) {
+    print("🔧 Initiating replica set...");
+    rs.initiate();
+    sleep(5000);
+  }
+
+  const cfg = rs.conf();
+  cfg.members[0].host = "mongodb:27017";
+  rs.reconfig(cfg, { force: true });
+  print("✅ Replica set host updated to mongodb:27017");
+'
 if [[ "$ADMIN_EMAIL" != "[not set]" ]]; then
   echo "✅ Airbyte est déjà initialisé avec l'email : $ADMIN_EMAIL"
   echo "⛔️ Arrêt du script pour éviter une reconfiguration."

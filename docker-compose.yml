@@ -86,12 +86,14 @@ services:
     depends_on:
       - postgres
 
+
   mongodb:
     image: mongo:6.0
+    hostname: mongodb
     container_name: mongodb
     ports:
       - "27017:27017"
-    command: [ "mongod", "--replSet", "rs0" ]
+    command: [ "mongod", "--replSet", "rs0","--bind_ip_all"]
     volumes:
       - ./mongo-init:/docker-entrypoint-initdb.d
       - ./mongo-data:/data/db
@@ -103,31 +105,11 @@ services:
       timeout: 10s
       retries: 5
 
-
-  mongo-express:
-    image: mongo-express
-    container_name: mongo-express
-    restart: unless-stopped
-    ports:
-      - "8081:8081"
-    environment:
-      ME_CONFIG_MONGODB_URL: mongodb://mongodb:27017
-      ME_CONFIG_MONGODB_PORT: 27017
-      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
-      ME_CONFIG_MONGODB_AUTH_DATABASE: "admin"
-      ME_CONFIG_BASICAUTH_USERNAME: admin
-      ME_CONFIG_BASICAUTH_PASSWORD: admin
-      WAIT_HOSTS: ""
-    depends_on:
-      mongodb:
-        condition: service_healthy
-    networks:
-      - app-network
-
-
 networks:
   app-network:
-    driver: bridge
+    external: true
+
+
 
 volumes:
   shared-data:
