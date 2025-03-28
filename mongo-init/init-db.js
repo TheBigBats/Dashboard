@@ -7,7 +7,7 @@ try {
 
     rs.initiate();
 
-
+    sleep(5000);
     (() => {
         const dbName = "DataBase";
         const collectionName = "init";
